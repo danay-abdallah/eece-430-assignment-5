@@ -1,0 +1,45 @@
+name: Build publish and run Docker image
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build image
+        run: docker build -t ghcr.io/${{ github.repository }}:latest .
+      - name: Test application inside Docker
+        run: docker run --rm ghcr.io/${{ github.repository }}:latest python manage.py test
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Publish Docker image
+        run: docker push ghcr.io/${{ github.repository }}:latest
+      - name: Pull image from GitHub and run it
+        run: |
+          docker image rm ghcr.io/${{ github.repository }}:latest
+          docker pull ghcr.io/${{ github.repository }}:latest
+          docker run -d --name ai-agent -p 127.0.0.1:8000:8000 ghcr.io/${{ github.repository }}:latest
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/ > /tmp/home.html; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          docker exec ai-agent python manage.py loaddata demo_inventory
+          docker exec ai-agent python manage.py check
+          docker ps
+          echo 'Image pulled from GitHub Container Registry; application returned HTTP 200.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Live Gemini chat requires a private API key and is not part of this smoke test.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Container logs
+        if: always()
+        run: docker logs ai-agent || true
